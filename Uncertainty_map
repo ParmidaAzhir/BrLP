@@ -2,7 +2,7 @@ import os
 import numpy as np
 import nibabel as nib
 
-BASE_DIR = r"P:\MRI_PREDICTIONS"  # or use your full path if needed
+BASE_DIR = r"P:\MRI_PREDICTIONS"  
 
 for subject in os.listdir(BASE_DIR):
     subject_path = os.path.join(BASE_DIR, subject)
