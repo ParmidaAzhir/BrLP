@@ -1,0 +1,74 @@
+import os
+import numpy as np
+import nibabel as nib
+import matplotlib.pyplot as plt
+
+BASE_DIR = r"P:\MRI_PREDICTIONS"
+EPS = 1e-5  # Prevent zero variance from collapsing entropy
+
+for subject in os.listdir(BASE_DIR):
+    subject_path = os.path.join(BASE_DIR, subject)
+    if not os.path.isdir(subject_path):
+        continue
+
+    pred_files = sorted([
+        f for f in os.listdir(subject_path)
+        if f.startswith("pred-mri-") and f.endswith(".nii.gz")
+    ])
+
+    if len(pred_files) != 64:
+        print(f" Skipping {subject} (only {len(pred_files)} prediction files)")
+        continue
+
+    print(f"\n Processing {subject}")
+
+    # Check prediction variability
+    means = [np.mean(nib.load(os.path.join(subject_path, f)).get_fdata()) for f in pred_files]
+    mean_range = max(means) - min(means)
+    print(f"{subject}: Prediction mean range = {min(means):.6f} to {max(means):.6f} (Δ={mean_range:.6f})")
+
+    if mean_range < 1e-6:
+        print(f"{subject}:  Skipping due to constant prediction values.")
+        continue
+
+    # Load all 64 predictions
+    prediction_stack = [nib.load(os.path.join(subject_path, f)).get_fdata() for f in pred_files]
+    prediction_stack = np.stack(prediction_stack, axis=0)  # Shape: [64, X, Y, Z]
+
+    # Compute variance per voxel
+    voxel_var = np.var(prediction_stack, axis=0)
+    voxel_var = np.where(voxel_var < EPS, EPS, voxel_var)  # Ensure strictly > 0
+
+    # Differential Shannon entropy of Gaussian
+    log_input = 2 * np.pi * np.e * voxel_var
+    entropy_map = 0.5 * np.log(log_input)
+    entropy_map = np.clip(entropy_map, EPS, None)  # Final safety clamp
+
+    # Debug
+    entropy_min, entropy_max, entropy_mean = entropy_map.min(), entropy_map.max(), entropy_map.mean()
+    nonzero_voxels = np.count_nonzero(entropy_map > 0)
+    print(f"{subject}: Entropy range = {entropy_min:.4f} to {entropy_max:.4f}, mean = {entropy_mean:.4f}, non-zero voxels = {nonzero_voxels}")
+
+    # Save as NIfTI
+    ref_img = nib.load(os.path.join(subject_path, pred_files[0]))
+    entropy_img = nib.Nifti1Image(entropy_map, affine=ref_img.affine, header=ref_img.header)
+    nib.save(entropy_img, os.path.join(subject_path, "uncertainty_entropy_map.nii.gz"))
+
+    # Normalize for full volume visualization
+    vmin, vmax = np.percentile(entropy_map, 1), np.percentile(entropy_map, 99)
+    entropy_vis = np.clip((entropy_map - vmin) / (vmax - vmin + EPS), 0, 1)
+
+    # Save ALL slices
+    save_dir = os.path.join(subject_path, "entropy_slices")
+    os.makedirs(save_dir, exist_ok=True)
+
+    for i in range(entropy_vis.shape[2]):
+        slice_data = entropy_vis[:, :, i]
+        plt.figure(figsize=(5, 5))
+        plt.imshow(slice_data.T, cmap='hot', origin='lower')
+        plt.axis('off')
+        plt.title(f"{subject} - Slice {i}")
+        plt.savefig(os.path.join(save_dir, f"slice_{i:03d}.png"), bbox_inches='tight')
+        plt.close()
+
+print("\n All entropy maps and per-slice visualizations saved successfully.")
