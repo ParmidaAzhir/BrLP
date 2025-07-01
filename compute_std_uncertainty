@@ -1,0 +1,81 @@
+import os
+import numpy as np
+import nibabel as nib
+import matplotlib.pyplot as plt
+import argparse
+import pandas as pd
+
+def compute_uncertainty_for_subject(subject_path, output_dir):
+    nii_files = sorted([
+        f for f in os.listdir(subject_path)
+        if f.startswith("pred-mri-") and f.endswith(".nii.gz")
+    ])
+
+    if len(nii_files) != 64:
+        print(f" Skipping {os.path.basename(subject_path)} - found {len(nii_files)} files")
+        return
+
+    # Load all prediction volumes
+    volumes = []
+    for fname in nii_files:
+        img = nib.load(os.path.join(subject_path, fname))
+        volumes.append(img.get_fdata())
+
+    volumes = np.stack(volumes, axis=0)  # [64, X, Y, Z]
+    std_map = np.std(volumes, axis=0)
+
+    print(f"{os.path.basename(subject_path)}: STD min={std_map.min():.4f}, max={std_map.max():.4f}, mean={std_map.mean():.4f}")
+
+    # Save NIfTI STD map
+    ref_img = nib.load(os.path.join(subject_path, nii_files[0]))
+    std_img = nib.Nifti1Image(std_map, affine=ref_img.affine, header=ref_img.header)
+
+    subject_id = os.path.basename(subject_path)
+    out_subject_dir = os.path.join(output_dir, subject_id)
+    os.makedirs(out_subject_dir, exist_ok=True)
+    nib.save(std_img, os.path.join(out_subject_dir, "uncertainty_std_map.nii.gz"))
+
+    # Save axial slices
+    slice_dir = os.path.join(out_subject_dir, "uncertainty_slices_std_axial")
+    os.makedirs(slice_dir, exist_ok=True)
+
+    for i in range(std_map.shape[2]):
+        slc = std_map[:, :, i]
+        if np.all(slc == 0):
+            continue
+
+        plt.figure(figsize=(5, 5))
+        plt.imshow(slc.T, cmap='hot', origin='lower')
+        plt.colorbar(label='STD')
+        plt.title(f"{subject_id} - Slice {i}")
+        plt.axis('off')
+        plt.tight_layout()
+        plt.savefig(os.path.join(slice_dir, f"slice_{i:03}.png"), bbox_inches='tight', dpi=150)
+        plt.close()
+
+def main():
+    parser = argparse.ArgumentParser(description="Compute STD-based uncertainty maps from MRI ensemble predictions.")
+    parser.add_argument('--n_dilations', type=int, default=4, help='Not used in this script, included to match expected CLI format')
+    parser.add_argument('--input_csv', type=str, required=True, help='CSV file with one column listing subject folders (full paths)')
+    parser.add_argument('--output_csv', type=str, required=True, help='Output directory to save uncertainty maps and slices')
+
+    args = parser.parse_args()
+
+    if not os.path.isfile(args.input_csv):
+        print(" Input CSV not found.")
+        return
+
+    subject_paths = pd.read_csv(args.input_csv, header=None)[0].tolist()
+
+    os.makedirs(args.output_csv, exist_ok=True)
+
+    for subject_path in subject_paths:
+        if os.path.isdir(subject_path):
+            compute_uncertainty_for_subject(subject_path, args.output_csv)
+        else:
+            print(f" Invalid subject path: {subject_path}")
+
+    print(" All subjects processed.")
+
+if __name__ == "__main__":
+    main()
