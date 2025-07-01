@@ -1,0 +1,65 @@
+import os
+import numpy as np
+import nibabel as nib
+import matplotlib.pyplot as plt
+import argparse
+
+def process_subjects(input_folder):
+    for subject in os.listdir(input_folder):
+        subj_path = os.path.join(input_folder, subject)
+        if not os.path.isdir(subj_path):
+            continue
+
+        nii_files = sorted([
+            f for f in os.listdir(subj_path)
+            if f.startswith("pred-mri-") and f.endswith(".nii.gz")
+        ])
+
+        if len(nii_files) != 64:
+            print(f"{subject} skipped - found {len(nii_files)} files")
+            continue
+
+        print(f"Processing: {subject}")
+        data_stack = []
+        for f in nii_files:
+            img = nib.load(os.path.join(subj_path, f))
+            data_stack.append(img.get_fdata())
+
+        # Compute variance map
+        var_map = np.var(data_stack, axis=0)
+        var_map = np.clip(var_map, 0, np.percentile(var_map, 99.5))
+        var_map = var_map ** 2  # p=2
+
+        ref_img = nib.load(os.path.join(subj_path, nii_files[0]))
+        out_img = nib.Nifti1Image(var_map, affine=ref_img.affine, header=ref_img.header)
+        nib.save(out_img, os.path.join(subj_path, "uncertainty_map.nii.gz"))
+
+        # Output slices to folder
+        out_slices = os.path.join(subj_path, "uncertainty_slices_axial")
+        os.makedirs(out_slices, exist_ok=True)
+
+        for i in range(var_map.shape[2]):
+            slc = var_map[:, :, i]
+            if np.all(slc == 0):
+                continue  # empty slice
+
+            plt.figure(figsize=(5, 5))
+            plt.imshow(slc.T, cmap='hot', origin='lower')
+            plt.colorbar(label='Variance')
+            plt.title(f"{subject} - Slice {i}")
+            plt.axis('off')
+            plt.tight_layout()
+            plt.savefig(os.path.join(out_slices, f"slice_{i:03}.png"), bbox_inches='tight', dpi=150)
+            plt.close()
+
+    print(" Done with all subjects.")
+
+def main():
+    parser = argparse.ArgumentParser(description="Create uncertainty maps from MRI predictions.")
+    parser.add_argument('--base_dir', type=str, required=True, help='Folder with all subject subfolders')
+    args = parser.parse_args()
+
+    process_subjects(args.base_dir)
+
+if __name__ == "__main__":
+    main()
