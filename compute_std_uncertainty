@@ -1,42 +1,53 @@
 import os
 import numpy as np
 import nibabel as nib
-import matplotlib.pyplot as plt
-import argparse
 import pandas as pd
+import argparse
+import matplotlib.pyplot as plt
 
-def compute_uncertainty_for_subject(subject_path, output_dir):
+def compute_std_from_ensemble(subject_path, output_dir, expected_count=64):
     nii_files = sorted([
         f for f in os.listdir(subject_path)
         if f.startswith("pred-mri-") and f.endswith(".nii.gz")
     ])
 
-    if len(nii_files) != 64:
-        print(f" Skipping {os.path.basename(subject_path)} - found {len(nii_files)} files")
+    if len(nii_files) != expected_count:
+        print(f" {os.path.basename(subject_path)} skipped - expected {expected_count} files, found {len(nii_files)}")
         return
 
-    # Load all prediction volumes
-    volumes = []
-    for fname in nii_files:
-        img = nib.load(os.path.join(subject_path, fname))
-        volumes.append(img.get_fdata())
+    sum_ = None
+    sum_sq = None
+    img_shape = None
 
-    volumes = np.stack(volumes, axis=0)  # [64, X, Y, Z]
-    std_map = np.std(volumes, axis=0)
+    for i, fname in enumerate(nii_files):
+        img = nib.load(os.path.join(subject_path, fname))
+        data = img.get_fdata()
+
+        if sum_ is None:
+            sum_ = np.zeros_like(data)
+            sum_sq = np.zeros_like(data)
+            img_shape = data.shape
+
+        sum_ += data
+        sum_sq += data ** 2
+
+    mean = sum_ / expected_count
+    var = (sum_sq / expected_count) - (mean ** 2)
+    std_map = np.sqrt(np.clip(var, 0, None))  # avoid negatives due to precision
 
     print(f"{os.path.basename(subject_path)}: STD min={std_map.min():.4f}, max={std_map.max():.4f}, mean={std_map.mean():.4f}")
 
-    # Save NIfTI STD map
+    # Save output
     ref_img = nib.load(os.path.join(subject_path, nii_files[0]))
-    std_img = nib.Nifti1Image(std_map, affine=ref_img.affine, header=ref_img.header)
-
     subject_id = os.path.basename(subject_path)
-    out_subject_dir = os.path.join(output_dir, subject_id)
-    os.makedirs(out_subject_dir, exist_ok=True)
-    nib.save(std_img, os.path.join(out_subject_dir, "uncertainty_std_map.nii.gz"))
+    subj_out_dir = os.path.join(output_dir, subject_id)
+    os.makedirs(subj_out_dir, exist_ok=True)
+
+    std_img = nib.Nifti1Image(std_map, affine=ref_img.affine, header=ref_img.header)
+    nib.save(std_img, os.path.join(subj_out_dir, "uncertainty_std_map.nii.gz"))
 
     # Save axial slices
-    slice_dir = os.path.join(out_subject_dir, "uncertainty_slices_std_axial")
+    slice_dir = os.path.join(subj_out_dir, "uncertainty_slices_std_axial")
     os.makedirs(slice_dir, exist_ok=True)
 
     for i in range(std_map.shape[2]):
@@ -54,10 +65,10 @@ def compute_uncertainty_for_subject(subject_path, output_dir):
         plt.close()
 
 def main():
-    parser = argparse.ArgumentParser(description="Compute STD-based uncertainty maps from MRI ensemble predictions.")
-    parser.add_argument('--n_dilations', type=int, default=4, help='Not used in this script, included to match expected CLI format')
-    parser.add_argument('--input_csv', type=str, required=True, help='CSV file with one column listing subject folders (full paths)')
-    parser.add_argument('--output_csv', type=str, required=True, help='Output directory to save uncertainty maps and slices')
+    parser = argparse.ArgumentParser(description="Compute STD-based uncertainty maps from MRI predictions.")
+    parser.add_argument('--n_dilations', type=int, default=4, help='(Unused) placeholder for CLI format compatibility')
+    parser.add_argument('--input_csv', type=str, required=True, help='CSV file with paths to subject folders')
+    parser.add_argument('--output_csv', type=str, required=True, help='Output directory for uncertainty results')
 
     args = parser.parse_args()
 
@@ -66,16 +77,15 @@ def main():
         return
 
     subject_paths = pd.read_csv(args.input_csv, header=None)[0].tolist()
-
     os.makedirs(args.output_csv, exist_ok=True)
 
     for subject_path in subject_paths:
         if os.path.isdir(subject_path):
-            compute_uncertainty_for_subject(subject_path, args.output_csv)
+            compute_std_from_ensemble(subject_path, args.output_csv)
         else:
-            print(f" Invalid subject path: {subject_path}")
+            print(f"Invalid path: {subject_path}")
 
-    print(" All subjects processed.")
+    print(" All subjects done.")
 
 if __name__ == "__main__":
     main()
